@@ -506,3 +506,73 @@
         })
     )
 )
+
+;; VALIDATION FUNCTIONS
+
+;; Validate token is approved for trading
+(define-private (is-approved-token (token principal))
+    (default-to false 
+        (get enabled (map-get? approved-tokens token))
+    )
+)
+
+;; Validate token pair for trading/liquidity operations
+(define-private (is-valid-token-pair (token-x principal) (token-y principal))
+    (and 
+        (not (is-eq token-x token-y))
+        (is-approved-token token-x)
+        (is-approved-token token-y)
+    )
+)
+
+;; READ-ONLY FUNCTIONS
+
+;; Get pool information
+(define-read-only (get-pool-info (token-x principal) (token-y principal))
+    (map-get? liquidity-pools (order-token-pair token-x token-y))
+)
+
+;; Get user liquidity position
+(define-read-only (get-user-position (user principal) (token-x principal) (token-y principal))
+    (let ((ordered-pair (order-token-pair token-x token-y)))
+        (map-get? liquidity-positions { 
+            user: user, 
+            token-x: (get token-x ordered-pair), 
+            token-y: (get token-y ordered-pair) 
+        })
+    )
+)
+
+;; Calculate swap quote without executing
+(define-read-only (get-swap-quote (token-in principal) (token-out principal) (amount-in uint))
+    (let (
+        (ordered-pair (order-token-pair token-in token-out))
+        (pool (map-get? liquidity-pools ordered-pair))
+    )
+        (match pool
+            pool-data 
+            (let ((is-token-x-input (is-eq token-in (get token-x ordered-pair))))
+                (if is-token-x-input
+                    (some (calculate-swap-output amount-in (get reserve-x pool-data) (get reserve-y pool-data)))
+                    (some (calculate-swap-output amount-in (get reserve-y pool-data) (get reserve-x pool-data)))
+                )
+            )
+            none
+        )
+    )
+)
+
+;; Get current reward rate
+(define-read-only (get-reward-rate)
+    (var-get reward-rate)
+)
+
+;; Get contract owner
+(define-read-only (get-contract-owner)
+    (var-get contract-owner)
+)
+
+;; INITIALIZATION
+
+;; Initialize contract with owner as first approved token (for testing)
+(map-set approved-tokens (var-get contract-owner) { enabled: true, added-at-block: stacks-block-height })
