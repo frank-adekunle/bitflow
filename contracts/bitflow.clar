@@ -408,3 +408,101 @@
                     total-deposited-x: (get total-deposited-x user-position),
                     total-deposited-y: (get total-deposited-y user-position)
                 })
+
+                ;; Update reward tracking
+                (map-set farming-rewards {
+                    user: tx-sender, 
+                    pool-token: (get token-x ordered-pair)
+                } {
+                    accumulated-rewards: reward-amount,
+                    last-reward-block: stacks-block-height
+                })
+                
+                (ok reward-amount)
+            )
+        )
+    )
+)
+
+;; HELPER FUNCTIONS & CALCULATIONS
+
+;; Calculate optimal amount for proportional liquidity addition
+(define-private (calculate-optimal-amount (amount-x uint) (reserve-x uint) (reserve-y uint))
+    (/ (* amount-x reserve-y) reserve-x)
+)
+
+;; Calculate initial liquidity using geometric mean
+(define-private (calculate-initial-liquidity (amount-x uint) (amount-y uint))
+    (sqrti (* amount-x amount-y))
+)
+
+;; Calculate liquidity shares for additional deposits
+(define-private (calculate-liquidity-shares (amount uint) (reserve uint) (total-supply uint))
+    (if (is-eq total-supply u0)
+        amount
+        (/ (* amount total-supply) reserve)
+    )
+)
+
+;; Calculate swap output using constant product formula with fees
+(define-private (calculate-swap-output (amount-in uint) (reserve-in uint) (reserve-out uint))
+    (let (
+        (amount-in-with-fee (- amount-in (/ (* amount-in TRADING-FEE-BASIS-POINTS) u10000)))
+        (numerator (* amount-in-with-fee reserve-out))
+        (denominator (+ reserve-in amount-in-with-fee))
+    )
+        (/ numerator denominator)
+    )
+)
+
+;; Order token pair consistently using string comparison
+(define-private (order-token-pair (token-a principal) (token-b principal))
+    (let (
+        (token-a-str (principal-to-string token-a))
+        (token-b-str (principal-to-string token-b))
+    )
+        (if (< (len token-a-str) (len token-b-str))
+            { token-x: token-a, token-y: token-b }
+            (if (> (len token-a-str) (len token-b-str))
+                { token-x: token-b, token-y: token-a }
+                ;; If same length, compare lexicographically using a simple character-by-character comparison
+                (if (is-eq token-a-str token-b-str)
+                    { token-x: token-a, token-y: token-b }  ;; Same principal, shouldn't happen in practice
+                    (if (< (char-at? token-a-str u0) (char-at? token-b-str u0))
+                        { token-x: token-a, token-y: token-b }
+                        { token-x: token-b, token-y: token-a }
+                    )
+                )
+            )
+        )
+    )
+)
+
+;; Convert principal to string for comparison
+(define-private (principal-to-string (p principal))
+    (unwrap-panic (principal-destruct? p))
+)
+
+;; Update user liquidity position with new deposits
+(define-private (update-user-liquidity-position 
+    (user principal) 
+    (token-x principal) 
+    (token-y principal)
+    (additional-shares uint)
+    (deposited-x uint)
+    (deposited-y uint)
+)
+    (let (
+        (existing-position (default-to 
+            { shares: u0, last-claim-block: stacks-block-height, total-deposited-x: u0, total-deposited-y: u0 }
+            (map-get? liquidity-positions { user: user, token-x: token-x, token-y: token-y })
+        ))
+    )
+        (map-set liquidity-positions { user: user, token-x: token-x, token-y: token-y } {
+            shares: (+ (get shares existing-position) additional-shares),
+            last-claim-block: stacks-block-height,
+            total-deposited-x: (+ (get total-deposited-x existing-position) deposited-x),
+            total-deposited-y: (+ (get total-deposited-y existing-position) deposited-y)
+        })
+    )
+)
