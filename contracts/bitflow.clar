@@ -100,3 +100,106 @@
         }))
     )
 )
+
+;; Update protocol reward rate (Owner only)
+(define-public (update-reward-rate (new-rate uint))
+    (begin
+        (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-UNAUTHORIZED)
+        (asserts! (<= new-rate MAX-REWARD-RATE) ERR-INVALID-AMOUNT)
+        (var-set reward-rate new-rate)
+        (ok true)
+    )
+)
+
+;; Transfer ownership (Current owner only)
+(define-public (transfer-ownership (new-owner principal))
+    (begin
+        (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-UNAUTHORIZED)
+        (var-set contract-owner new-owner)
+        (ok true)
+    )
+)
+
+;; CORE AMM FUNCTIONALITY
+
+;; Initialize new liquidity pool with initial deposits
+(define-public (initialize-pool 
+    (token-x <ft-trait>) 
+    (token-y <ft-trait>) 
+    (initial-x uint) 
+    (initial-y uint)
+)
+    (let (
+        (token-x-principal (contract-of token-x))
+        (token-y-principal (contract-of token-y))
+        (ordered-pair (order-token-pair token-x-principal token-y-principal))
+    )
+        ;; Input validation
+        (asserts! (is-valid-token-pair token-x-principal token-y-principal) ERR-INVALID-PAIR)
+        (asserts! (and (> initial-x u0) (> initial-y u0)) ERR-INVALID-AMOUNT)
+        
+        ;; Ensure pool doesn't already exist
+        (asserts! (is-none (map-get? liquidity-pools ordered-pair)) ERR-POOL-ALREADY-EXISTS)
+        
+        ;; Execute token transfers from user to contract
+        (try! (contract-call? token-x transfer initial-x tx-sender (as-contract tx-sender) none))
+        (try! (contract-call? token-y transfer initial-y tx-sender (as-contract tx-sender) none))
+        
+        ;; Initialize pool state
+        (map-set liquidity-pools ordered-pair {
+            total-liquidity: (calculate-initial-liquidity initial-x initial-y),
+            reserve-x: initial-x,
+            reserve-y: initial-y,
+            created-at-block: stacks-block-height,
+            last-update-block: stacks-block-height
+        })
+        
+        ;; Grant initial LP tokens to pool creator
+        (map-set liquidity-positions {
+            user: tx-sender, 
+            token-x: (get token-x ordered-pair), 
+            token-y: (get token-y ordered-pair)
+        } {
+            shares: (calculate-initial-liquidity initial-x initial-y),
+            last-claim-block: stacks-block-height,
+            total-deposited-x: initial-x,
+            total-deposited-y: initial-y
+        })
+        
+        (ok true)
+    )
+)
+
+;; Add liquidity to existing pool
+(define-public (add-liquidity 
+    (token-x <ft-trait>) 
+    (token-y <ft-trait>) 
+    (amount-x uint) 
+    (amount-y uint)
+    (min-shares uint)
+)
+    (let (
+        (token-x-principal (contract-of token-x))
+        (token-y-principal (contract-of token-y))
+        (ordered-pair (order-token-pair token-x-principal token-y-principal))
+    )
+        ;; Input validation
+        (asserts! (is-valid-token-pair token-x-principal token-y-principal) ERR-INVALID-PAIR)
+        (asserts! (and (> amount-x u0) (> amount-y u0)) ERR-INVALID-AMOUNT)
+        
+        (let (
+            (pool (unwrap! (map-get? liquidity-pools ordered-pair) ERR-POOL-NOT-EXISTS))
+            (optimal-y (calculate-optimal-amount amount-x (get reserve-x pool) (get reserve-y pool)))
+        )
+            ;; Ensure provided amounts maintain pool ratio
+            (asserts! (>= amount-y optimal-y) ERR-INVALID-AMOUNT)
+            
+            ;; Calculate LP shares to mint
+            (let (
+                (shares-to-mint (calculate-liquidity-shares 
+                    amount-x 
+                    (get reserve-x pool) 
+                    (get total-liquidity pool)
+                ))
+            )
+                (asserts! (>= shares-to-mint min-shares) ERR-INSUFFICIENT-FUNDS)
