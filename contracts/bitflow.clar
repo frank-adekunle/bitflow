@@ -302,3 +302,109 @@
         )
     )
 )
+
+;; Execute token swap with slippage protection
+(define-public (swap-exact-tokens-for-tokens 
+    (token-in <ft-trait>) 
+    (token-out <ft-trait>) 
+    (amount-in uint)
+    (min-amount-out uint)
+)
+    (let (
+        (token-in-principal (contract-of token-in))
+        (token-out-principal (contract-of token-out))
+        (ordered-pair (order-token-pair token-in-principal token-out-principal))
+    )
+        ;; Input validation
+        (asserts! (is-valid-token-pair token-in-principal token-out-principal) ERR-INVALID-PAIR)
+        (asserts! (> amount-in u0) ERR-INVALID-AMOUNT)
+        
+        (let (
+            (pool (unwrap! (map-get? liquidity-pools ordered-pair) ERR-POOL-NOT-EXISTS))
+            (is-token-x-input (is-eq token-in-principal (get token-x ordered-pair)))
+        )
+            ;; Calculate swap output using constant product formula
+            (let (
+                (amount-out (if is-token-x-input
+                    (calculate-swap-output amount-in (get reserve-x pool) (get reserve-y pool))
+                    (calculate-swap-output amount-in (get reserve-y pool) (get reserve-x pool))
+                ))
+            )
+                ;; Validate slippage protection
+                (asserts! (>= amount-out min-amount-out) ERR-INSUFFICIENT-FUNDS)
+                
+                ;; Execute token transfers
+                (try! (contract-call? token-in transfer amount-in tx-sender (as-contract tx-sender) none))
+                (try! (as-contract (contract-call? token-out transfer amount-out tx-sender tx-sender none)))
+                
+                ;; Update pool reserves
+                (if is-token-x-input
+                    (map-set liquidity-pools ordered-pair {
+                        total-liquidity: (get total-liquidity pool),
+                        reserve-x: (+ (get reserve-x pool) amount-in),
+                        reserve-y: (- (get reserve-y pool) amount-out),
+                        created-at-block: (get created-at-block pool),
+                        last-update-block: stacks-block-height
+                    })
+                    (map-set liquidity-pools ordered-pair {
+                        total-liquidity: (get total-liquidity pool),
+                        reserve-x: (- (get reserve-x pool) amount-out),
+                        reserve-y: (+ (get reserve-y pool) amount-in),
+                        created-at-block: (get created-at-block pool),
+                        last-update-block: stacks-block-height
+                    })
+                )
+                
+                (ok amount-out)
+            )
+        )
+    )
+)
+
+;; YIELD FARMING & REWARDS
+
+;; Claim accumulated farming rewards
+(define-public (harvest-rewards 
+    (token-x <ft-trait>) 
+    (token-y <ft-trait>)
+)
+    (let (
+        (token-x-principal (contract-of token-x))
+        (token-y-principal (contract-of token-y))
+        (ordered-pair (order-token-pair token-x-principal token-y-principal))
+    )
+        ;; Validate token pair
+        (asserts! (is-valid-token-pair token-x-principal token-y-principal) ERR-INVALID-PAIR)
+        
+        (let (
+            (user-position (unwrap! 
+                (map-get? liquidity-positions {
+                    user: tx-sender, 
+                    token-x: (get token-x ordered-pair), 
+                    token-y: (get token-y ordered-pair)
+                })
+                ERR-UNAUTHORIZED
+            ))
+        )
+            ;; Ensure minimum liquidity threshold for rewards
+            (asserts! (>= (get shares user-position) MIN-LIQUIDITY-FOR-REWARDS) ERR-INSUFFICIENT-FUNDS)
+            
+            ;; Calculate pending rewards
+            (let (
+                (blocks-since-last-claim (- stacks-block-height (get last-claim-block user-position)))
+                (reward-amount (* 
+                    (* (get shares user-position) (var-get reward-rate))
+                    blocks-since-last-claim
+                ))
+            )
+                ;; Update last claim block
+                (map-set liquidity-positions {
+                    user: tx-sender, 
+                    token-x: (get token-x ordered-pair), 
+                    token-y: (get token-y ordered-pair)
+                } {
+                    shares: (get shares user-position),
+                    last-claim-block: stacks-block-height,
+                    total-deposited-x: (get total-deposited-x user-position),
+                    total-deposited-y: (get total-deposited-y user-position)
+                })
