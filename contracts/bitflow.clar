@@ -203,3 +203,102 @@
                 ))
             )
                 (asserts! (>= shares-to-mint min-shares) ERR-INSUFFICIENT-FUNDS)
+
+                ;; Execute token transfers
+                (try! (contract-call? token-x transfer amount-x tx-sender (as-contract tx-sender) none))
+                (try! (contract-call? token-y transfer optimal-y tx-sender (as-contract tx-sender) none))
+                
+                ;; Update pool reserves
+                (map-set liquidity-pools ordered-pair {
+                    total-liquidity: (+ (get total-liquidity pool) shares-to-mint),
+                    reserve-x: (+ (get reserve-x pool) amount-x),
+                    reserve-y: (+ (get reserve-y pool) optimal-y),
+                    created-at-block: (get created-at-block pool),
+                    last-update-block: stacks-block-height
+                })
+                
+                ;; Update user liquidity position
+                (update-user-liquidity-position 
+                    tx-sender 
+                    (get token-x ordered-pair) 
+                    (get token-y ordered-pair)
+                    shares-to-mint
+                    amount-x
+                    optimal-y
+                )
+                
+                (ok shares-to-mint)
+            )
+        )
+    )
+)
+
+;; Remove liquidity from pool
+(define-public (remove-liquidity 
+    (token-x <ft-trait>) 
+    (token-y <ft-trait>) 
+    (shares-to-burn uint)
+    (min-x uint)
+    (min-y uint)
+)
+    (let (
+        (token-x-principal (contract-of token-x))
+        (token-y-principal (contract-of token-y))
+        (ordered-pair (order-token-pair token-x-principal token-y-principal))
+    )
+        ;; Input validation
+        (asserts! (is-valid-token-pair token-x-principal token-y-principal) ERR-INVALID-PAIR)
+        (asserts! (> shares-to-burn u0) ERR-INVALID-AMOUNT)
+        
+        (let (
+            (user-position (unwrap! 
+                (map-get? liquidity-positions {
+                    user: tx-sender, 
+                    token-x: (get token-x ordered-pair), 
+                    token-y: (get token-y ordered-pair)
+                })
+                ERR-UNAUTHORIZED
+            ))
+            (pool (unwrap! (map-get? liquidity-pools ordered-pair) ERR-POOL-NOT-EXISTS))
+        )
+            ;; Validate sufficient shares
+            (asserts! (<= shares-to-burn (get shares user-position)) ERR-INSUFFICIENT-FUNDS)
+            
+            ;; Calculate withdrawal amounts
+            (let (
+                (withdraw-x (/ (* shares-to-burn (get reserve-x pool)) (get total-liquidity pool)))
+                (withdraw-y (/ (* shares-to-burn (get reserve-y pool)) (get total-liquidity pool)))
+            )
+                ;; Validate minimum withdrawal amounts
+                (asserts! (and (>= withdraw-x min-x) (>= withdraw-y min-y)) ERR-INSUFFICIENT-FUNDS)
+                
+                ;; Execute token transfers back to user
+                (try! (as-contract (contract-call? token-x transfer withdraw-x tx-sender tx-sender none)))
+                (try! (as-contract (contract-call? token-y transfer withdraw-y tx-sender tx-sender none)))
+                
+                ;; Update pool state
+                (map-set liquidity-pools ordered-pair {
+                    total-liquidity: (- (get total-liquidity pool) shares-to-burn),
+                    reserve-x: (- (get reserve-x pool) withdraw-x),
+                    reserve-y: (- (get reserve-y pool) withdraw-y),
+                    created-at-block: (get created-at-block pool),
+                    last-update-block: stacks-block-height
+                })
+                
+                ;; Update user position
+                (map-set liquidity-positions {
+                    user: tx-sender, 
+                    token-x: (get token-x ordered-pair), 
+                    token-y: (get token-y ordered-pair)
+                } {
+                    shares: (- (get shares user-position) shares-to-burn),
+                    last-claim-block: (get last-claim-block user-position),
+                    total-deposited-x: (get total-deposited-x user-position),
+                    total-deposited-y: (get total-deposited-y user-position)
+                })
+                
+                (ok { withdrawn-x: withdraw-x, withdrawn-y: withdraw-y })
+            )
+        )
+    )
+)
