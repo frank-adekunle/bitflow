@@ -455,32 +455,18 @@
     )
 )
 
-;; Order token pair consistently using string comparison
+;; Order token pair consistently using hash comparison
 (define-private (order-token-pair (token-a principal) (token-b principal))
+    ;; Use hash160 to create consistent ordering
     (let (
-        (token-a-str (principal-to-string token-a))
-        (token-b-str (principal-to-string token-b))
+        (hash-a (hash160 (unwrap-panic (to-consensus-buff? token-a))))
+        (hash-b (hash160 (unwrap-panic (to-consensus-buff? token-b))))
     )
-        (if (< (len token-a-str) (len token-b-str))
+        (if (< hash-a hash-b)
             { token-x: token-a, token-y: token-b }
-            (if (> (len token-a-str) (len token-b-str))
-                { token-x: token-b, token-y: token-a }
-                ;; If same length, compare lexicographically using a simple character-by-character comparison
-                (if (is-eq token-a-str token-b-str)
-                    { token-x: token-a, token-y: token-b }  ;; Same principal, shouldn't happen in practice
-                    (if (< (char-at? token-a-str u0) (char-at? token-b-str u0))
-                        { token-x: token-a, token-y: token-b }
-                        { token-x: token-b, token-y: token-a }
-                    )
-                )
-            )
+            { token-x: token-b, token-y: token-a }
         )
     )
-)
-
-;; Convert principal to string for comparison
-(define-private (principal-to-string (p principal))
-    (unwrap-panic (principal-destruct? p))
 )
 
 ;; Update user liquidity position with new deposits
